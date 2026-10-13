@@ -17,6 +17,7 @@ const notify = useNotification()
 // 只展示「当前是否生效」，避免关于页显示 VIP2 但 K线分析/AI助手提示权限不足。
 const vipLevel=ref(0);
 const vipActive=ref(false);
+const openAccess=ref(true);
 const vipReason=ref("");
 const vipStartTime=ref("");
 const vipEndTime=ref("");
@@ -186,8 +187,15 @@ onMounted(() => {
 
   });
 
-  // 以「当前是否生效」为准展示，与 K线分析 / AI助手 等功能的门控同源
+  // 以「当前是否生效」为准展示；开放访问模式下不展示 VIP 标签
   GetEffectiveSponsorVip().then((res) => {
+    openAccess.value = !!res?.openAccess;
+    if (openAccess.value) {
+      vipLevel.value = 0;
+      vipActive.value = false;
+      vipReason.value = "";
+      return;
+    }
     const lvl = Number(res?.vipLevel ?? 0);
     vipLevel.value = Number.isNaN(lvl) ? 0 : lvl;
     vipActive.value = !!res?.active;
@@ -371,8 +379,8 @@ EventsOn("updateNeedAdmin", (msg) => {
           </div>
         </n-card>
 
-        <!-- 内嵌支付/赞助页 -->
-        <n-card size="large" :bordered="false" class="embed-card" content-style="padding: 0;">
+        <!-- 赞助页：开放访问模式下隐藏（功能已全员开放） -->
+        <n-card v-if="!openAccess" size="large" :bordered="false" class="embed-card" content-style="padding: 0;">
           <template #header>
             <div class="embed-header">
               <span class="embed-title">💖 赞助与会员</span>
@@ -386,8 +394,7 @@ EventsOn("updateNeedAdmin", (msg) => {
             <iframe
               src="https://go-stock.sparkmemory.top/pay"
               class="pay-iframe"
-              :class="{ 'is-loaded': !iframeLoading }"
-              allow="payment; clipboard-write"
+              :class="{ 'is-loaded': !iframeLoading }"              allow="payment; clipboard-write"
               referrerpolicy="no-referrer-when-downgrade"
               @load="iframeLoading = false"
             ></iframe>

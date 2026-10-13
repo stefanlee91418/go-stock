@@ -362,8 +362,17 @@ async function handleFavorite(skill) {
 // 从广场下载技能包并导入本地 skills 目录
 async function handleImport(skill) {
   if (skill.needVip) {
-    message.warning('该技能为VIP专属，请先开通VIP')
-    return
+    try {
+      const vip = await GetEffectiveSponsorVip()
+      // 开放访问模式或有效 VIP 才放行；远程广场若仍拒绝 vipOnly 包，由下载接口报错
+      if (!(vip?.openAccess || (vip?.active && Number(vip?.vipLevel) > 0))) {
+        message.warning('该技能为VIP专属，请先开通VIP')
+        return
+      }
+    } catch (_) {
+      message.warning('该技能为VIP专属，请先开通VIP')
+      return
+    }
   }
   detailModal.importing = true
   try {

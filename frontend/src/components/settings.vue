@@ -15,6 +15,7 @@ import {
   UpdateConfig,
   UpdateAiConfigs,
   CheckSponsorCode,
+  GetEffectiveSponsorVip,
   PromptPlazaRequest,
 } from "../../wailsjs/go/main/App";
 import {NTag, NTooltip, NIcon, useMessage, useDialog} from "naive-ui";
@@ -26,6 +27,8 @@ import PlazaAuthModal from './plazaAuthModal.vue'
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
+/** 开放访问模式：功能全员可用，隐藏赞助码入口 */
+const openAccess = ref(true)
 
 // ===== 账号（与「提示词广场」共用同一套账号与 token） =====
 const plazaToken = ref(localStorage.getItem('promptPlazaToken') || '')
@@ -157,6 +160,11 @@ function goAiConfigs() {
 }
 
 onMounted(() => {
+  GetEffectiveSponsorVip().then((res) => {
+    openAccess.value = !!res?.openAccess
+  }).catch(() => {
+    openAccess.value = true
+  })
   GetConfig().then(res => {
     formValue.value.ID = res.ID
     formValue.value.tushareToken = res.tushareToken
@@ -282,7 +290,7 @@ function saveConfig() {
     promptPlazaApiBase: 'https://go-stock.sparkmemory.top/api',
   })
 
-  if (config.sponsorCode) {
+  if (!openAccess.value && config.sponsorCode) {
     CheckSponsorCode(config.sponsorCode).then(res => {
       if (!res.code) {
         message.warning(res.msg || '赞助码验证失败')
@@ -713,7 +721,7 @@ function deletePrompt(ID) {
               </n-tooltip>
             </n-form-item-gi>
 
-            <n-form-item-gi :span="24" path="sponsorCode" class="sponsor-code-item">
+            <n-form-item-gi v-if="!openAccess" :span="24" path="sponsorCode" class="sponsor-code-item">
               <div class="sponsor-code-box">
                 <div class="sponsor-code-label">
                   <n-tag type="warning" size="small" :bordered="false" round>👑 VIP</n-tag>

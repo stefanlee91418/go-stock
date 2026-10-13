@@ -131,7 +131,7 @@ func MonitorStockPrices(a *App) {
 		return
 	}
 
-	logger.SugaredLogger.Debugf("市场状态 - A股: %v, 港股: %v, 美股: %v", isAStockOpen, isHKStockOpen, isUSStockOpen)
+	// logger.SugaredLogger.Debugf("市场状态 - A股: %v, 港股: %v, 美股: %v", isAStockOpen, isHKStockOpen, isUSStockOpen)
 
 	dest := &[]data.FollowedStock{}
 	db.Dao.Model(&data.FollowedStock{}).Find(dest)

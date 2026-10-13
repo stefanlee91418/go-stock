@@ -1,9 +1,11 @@
 package data
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,4 +155,45 @@ func GetSharedTransport() *http.Transport {
 	httpConfigMutex.RLock()
 	defer httpConfigMutex.RUnlock()
 	return sharedTransport
+}
+
+// CreateHTTPClientInsecureTLS 克隆共享 Transport，并跳过 TLS 证书校验。
+// 用于企业代理 / 飞连等 HTTPS 中间人场景：系统/浏览器已信任企业根证书，
+// 但 Go 默认证书池未包含时会出现 x509: certificate signed by unknown authority。
+// 仅应在明确需要（如广场 API 证书校验失败后的回退）时使用。
+func CreateHTTPClientInsecureTLS(timeout time.Duration) *resty.Client {
+	httpConfigMutex.RLock()
+	base := sharedTransport
+	httpConfigMutex.RUnlock()
+
+	tr := &http.Transport{
+		DialContext:           base.DialContext,
+		MaxIdleConns:          base.MaxIdleConns,
+		MaxIdleConnsPerHost:   base.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       base.MaxConnsPerHost,
+		IdleConnTimeout:       base.IdleConnTimeout,
+		TLSHandshakeTimeout:   base.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: base.ResponseHeaderTimeout,
+		ExpectContinueTimeout: base.ExpectContinueTimeout,
+		ForceAttemptHTTP2:     base.ForceAttemptHTTP2,
+		Proxy:                 base.Proxy,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional fallback for MITM proxy CA
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	return resty.NewWithClient(&http.Client{Transport: tr, Timeout: timeout}).
+		SetTimeout(timeout).
+		SetRetryCount(0)
+}
+
+// IsTLSUnknownAuthority 判断错误是否为证书不被信任（常见于企业 HTTPS 解密代理）。
+func IsTLSUnknownAuthority(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "certificate signed by unknown authority") ||
+		strings.Contains(msg, "tls: failed to verify certificate") ||
+		strings.Contains(msg, "x509: certificate")
 }

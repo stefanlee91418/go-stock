@@ -19,7 +19,6 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/openrouter"
 	"github.com/cloudwego/eino-ext/components/model/qwen"
 	"github.com/cloudwego/eino/components/model"
-	"github.com/duke-git/lancet/v2/strutil"
 	ollamaapi "github.com/eino-contrib/ollama/api"
 	"google.golang.org/genai"
 )
@@ -117,8 +116,9 @@ func detectChatModelProvider(baseLower, modelName string) chatModelProvider {
 	if isGeminiGoogleAI(baseLower, modelLower) {
 		return providerGemini
 	}
-	if strings.Contains(baseLower, "api.deepseek.com") ||
-		strutil.ContainsAny(modelLower, []string{"deepseek", "deepseek-v", "deepseek-r", "deepseek-chat", "deepseek-coder", "deepseek-reasoner"}) {
+	// 仅按 BaseURL 识别 DeepSeek 官方；自定义 OpenAI 兼容网关上的 deepseek-* 模型名
+	// 必须走 OpenAI 兼容组件，否则会被错误路由到 DeepSeek SDK。
+	if strings.Contains(baseLower, "api.deepseek.com") {
 		return providerDeepSeek
 	}
 	return providerOpenAICompatible
@@ -183,6 +183,8 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 
 	p := detectChatModelProvider(baseLower, aiConfig.ModelName)
 	logger.SugaredLogger.Infof("createChatModel provider=%d base=%q model=%q", p, aiConfig.BaseUrl, aiConfig.ModelName)
+	logger.ModelInfof("createChatModel provider=%d base=%q model=%q maxTokens=%d contextWindow=%d temperature=%.2f thinking=%v timeout=%s vision=%v",
+		p, aiConfig.BaseUrl, aiConfig.ModelName, resolvedOutput, contextWindow, aiConfig.Temperature, aiConfig.Thinking, timeout, aiConfig.SupportVision)
 
 	switch p {
 	case providerVolcArk:
@@ -241,12 +243,10 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 			maxOut = *outputMaxTokens
 		}
 		cfg := &claude.Config{
-			APIKey:    aiConfig.ApiKey,
-			Model:     aiConfig.ModelName,
-			MaxTokens: maxOut,
-			HTTPClient: &http.Client{
-				Timeout: timeout,
-			},
+			APIKey:     aiConfig.ApiKey,
+			Model:      aiConfig.ModelName,
+			MaxTokens:  maxOut,
+			HTTPClient: buildChatModelHTTPClient(timeout, aiConfig.ExtraHeaders, aiConfig.SessionId),
 		}
 		if aiConfig.Temperature > 0 {
 			cfg.Temperature = ptrFloat32(temperature)
@@ -361,8 +361,19 @@ func createChatModel(ctx context.Context, aiConfig data.AIConfig) (model.ToolCal
 
 	default:
 		extraFields := map[string]any{}
+		// 自定义 OpenAI 兼容网关（硅基/NewAPI/OneAPI 等）常用 enable_thinking；
+		// 官方 OpenAI / Azure 不认识该字段会 400，故排除。
 		if aiConfig.Thinking {
-			logger.SugaredLogger.Warnf("generic OpenAI-compatible agent model %q ignores thinking option to keep request parameters standard", aiConfig.ModelName)
+			if !strings.Contains(baseLower, "api.openai.com") &&
+				!strings.Contains(baseLower, "openai.azure.com") &&
+				!strings.Contains(baseLower, ".azure.com/openai") {
+				extraFields["enable_thinking"] = true
+				logger.SugaredLogger.Infof("OpenAI-compatible model %q: enable_thinking=true for custom gateway", aiConfig.ModelName)
+				logger.ModelInfof("OpenAI-compatible model %q: enable_thinking=true for custom gateway", aiConfig.ModelName)
+			} else {
+				logger.SugaredLogger.Warnf("generic OpenAI-compatible agent model %q ignores thinking on official OpenAI/Azure endpoints", aiConfig.ModelName)
+				logger.ModelWarnf("generic OpenAI-compatible agent model %q ignores thinking on official OpenAI/Azure endpoints", aiConfig.ModelName)
+			}
 		}
 		cfg := &einoopenai.ChatModelConfig{
 			BaseURL:     baseURL,
@@ -446,6 +457,8 @@ func buildChatModelHTTPClient(timeout time.Duration, extraHeaders, sessionId str
 			sessionId: sessionId,
 		}
 	}
+	// 最外层记录模型 HTTP 调用摘要 → logs/model.log
+	roundTripper = &modelCallLogTransport{base: roundTripper}
 
 	return &http.Client{
 		Transport: roundTripper,

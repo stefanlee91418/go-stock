@@ -686,21 +686,25 @@ func runReact(ctx context.Context, stockAiAgent *StockAiAgent, messages []*schem
 
 		logger.SugaredLogger.Infof("runReact sr stats: total=%d content=%d reasoning=%d sent_content_msgs=%d fullResponse_len=%d reasoningFallback_len=%d stream_success=%v finish_reason=%s question=%q",
 			srTotalChunks, srContentChunks, srReasoningChunks, srSentContentMsgs, fullResponse.Len(), reasoningFallback.Len(), streamSuccess, srLastFinishReason, truncate(question, 100))
+		logger.ModelInfof("runReact sr stats: total=%d content=%d reasoning=%d sent_content_msgs=%d fullResponse_len=%d reasoningFallback_len=%d stream_success=%v finish_reason=%s question=%q",
+			srTotalChunks, srContentChunks, srReasoningChunks, srSentContentMsgs, fullResponse.Len(), reasoningFallback.Len(), streamSuccess, srLastFinishReason, truncate(question, 100))
 
-		// 注意：不再将 reasoning_content 回退为最终回复。reasoning_content 是模型的思考过程，
-		// 不是给用户的正式回复。如果模型只产生 reasoning_content 而没有 content，说明模型
-		// 可能在思考阶段耗尽了 token 预算（finish_reason=length），此时不应将思考过程
-		// 当作回复发送给用户或保存到多轮记忆中。
+		// 自定义 OpenAI 兼容「思考模型」常把最终答案写在 reasoning_content、content 为空。
+		// finish_reason=length 时多半是思考被截断，不提升；正常结束（stop/空）则提升为最终回复，
+		// 否则前端只会看到思考过程与工具步骤、回答区空白。
 		if fullResponse.Len() == 0 && reasoningFallback.Len() > 0 {
-			logger.SugaredLogger.Warnf("runReact: model produced only reasoning_content (len=%d) with no final content, "+
-				"will not use thinking process as reply (finish_reason=%s)", reasoningFallback.Len(), srLastFinishReason)
+			if promoted := promoteReasoningAsFinalReply(ch, reasoningFallback.String(), srLastFinishReason); promoted != "" {
+				fullResponse.WriteString(promoted)
+			} else {
+				logger.SugaredLogger.Warnf("runReact: model produced only reasoning_content (len=%d) with no final content, "+
+					"will not use thinking process as reply (finish_reason=%s)", reasoningFallback.Len(), srLastFinishReason)
+			}
 		}
 
 		// 保存条件：只要 fullResponse 有内容就保存，不依赖 streamSuccess。
 		// 之前的实现 `fullResponse.Len() != 0 && streamSuccess` 会在流被中断（用户主动中断、
 		// 网络抖动、超时等）时完全不保存对话，导致下一轮 AI 读取历史为空、回复"找不到之前的分析内容"。
 		// 即使流被中断，已生成的部分回复对下一轮上下文仍有价值，应予以保留。
-		// streamSuccess 仅用于决定是否将 reasoning_content 作为兜底回复（见上方分支）。
 		if fullResponse.Len() != 0 {
 			final := fullResponse.String()
 			// 推荐记录自动保存（默认开启，异步执行避免行情拉取阻塞收尾）：见 auto_recommend_saver.go
@@ -1255,7 +1259,9 @@ func runReactWithAgent(ctx context.Context, reactAgent *react.Agent, messages []
 		}()
 
 		var fullResponse strings.Builder
+		var reasoningFallback strings.Builder
 		streamSuccess := false
+		var srLastFinishReason string
 		for {
 			msg, err := sr.Recv()
 			if err != nil {
@@ -1272,17 +1278,33 @@ func runReactWithAgent(ctx context.Context, reactAgent *react.Agent, messages []
 			}
 			// 仅处理 Assistant 角色的 Content：避免把 Tool 角色的工具返回内容写入 fullResponse
 			// 或当作 AI 回复发给前端（详见 runReact 中相同修复的说明）。
-			if msg != nil && msg.Content != "" && msg.Role == schema.Assistant {
-				fullResponse.WriteString(msg.Content)
-				safeSend(ch, &schema.Message{
-					Role:    schema.Assistant,
-					Content: msg.Content,
-				})
+			if msg != nil {
+				if msg.Content != "" && msg.Role == schema.Assistant {
+					fullResponse.WriteString(msg.Content)
+					safeSend(ch, &schema.Message{
+						Role:    schema.Assistant,
+						Content: msg.Content,
+					})
+				}
+				if msg.ReasoningContent != "" {
+					reasoningFallback.WriteString(msg.ReasoningContent)
+				}
+				if msg.ResponseMeta != nil && msg.ResponseMeta.FinishReason != "" {
+					srLastFinishReason = msg.ResponseMeta.FinishReason
+				}
 			}
 		}
 
-		logger.SugaredLogger.Infof("runReactWithAgent sr stats: fullResponse_len=%d stream_success=%v question=%q",
-			fullResponse.Len(), streamSuccess, truncate(question, 100))
+		logger.SugaredLogger.Infof("runReactWithAgent sr stats: fullResponse_len=%d reasoningFallback_len=%d stream_success=%v finish_reason=%s question=%q",
+			fullResponse.Len(), reasoningFallback.Len(), streamSuccess, srLastFinishReason, truncate(question, 100))
+		logger.ModelInfof("runReactWithAgent sr stats: fullResponse_len=%d reasoningFallback_len=%d stream_success=%v finish_reason=%s question=%q",
+			fullResponse.Len(), reasoningFallback.Len(), streamSuccess, srLastFinishReason, truncate(question, 100))
+
+		if fullResponse.Len() == 0 && reasoningFallback.Len() > 0 {
+			if promoted := promoteReasoningAsFinalReply(ch, reasoningFallback.String(), srLastFinishReason); promoted != "" {
+				fullResponse.WriteString(promoted)
+			}
+		}
 
 		// 保存条件不依赖 streamSuccess：流被中断时已生成的部分回复仍应写入 chat_memory，
 		// 否则降级路径下也会出现"下一轮找不到之前分析内容"的问题。
@@ -1777,6 +1799,78 @@ func isBlockElement(line string) bool {
 		return true
 	}
 	return false
+}
+
+// promoteReasoningAsFinalReply 将「仅有 reasoning、无 content」场景下的思考文本提升为最终回复。
+// 自定义 OpenAI 兼容思考模型常把整段输出放进 reasoning_content（含 finish_reason=length
+// 时思考耗尽输出额度、正文永远为空）。若直接丢弃，前端回答区只剩 "..."，用户看不到
+// 已生成的 1k+ tokens。length 场景仍提升，但附加截断提示，建议增大 MaxTokens。
+func promoteReasoningAsFinalReply(ch chan *schema.Message, reasoning, finishReason string) string {
+	text := strings.TrimSpace(reasoning)
+	if text == "" {
+		return ""
+	}
+	// 去掉前端进度标记行，避免把 [STEP]/[STATS] 当成回答正文
+	var cleaned []string
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "[STEP]") || strings.HasPrefix(trim, "[STATS]") || strings.HasPrefix(trim, "[FALLBACK]") {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	text = strings.TrimSpace(strings.Join(cleaned, "\n"))
+	// 部分模型用 </think> / 等标签分隔「思考 / 正文」，优先取标签后的正文
+	text = extractAnswerFromReasoning(text)
+	if text == "" {
+		return ""
+	}
+	fr := strings.ToLower(strings.TrimSpace(finishReason))
+	truncated := fr == "length" || fr == "max_tokens"
+	if truncated {
+		text = "⚠️ **输出在思考阶段达到 MaxTokens 上限，以下为已生成内容（可能不完整）。** 建议在 AI 配置中增大 MaxTokens，或关闭深度思考后再试。\n\n" + text
+	}
+	logger.SugaredLogger.Infof("promoteReasoningAsFinalReply: using reasoning as final content (len=%d finish_reason=%s truncated=%v)",
+		len(text), finishReason, truncated)
+	logger.ModelInfof("promoteReasoningAsFinalReply: using reasoning as final content (len=%d finish_reason=%s truncated=%v)",
+		len(text), finishReason, truncated)
+	safeSend(ch, &schema.Message{
+		Role:    schema.Assistant,
+		Content: text,
+	})
+	return text
+}
+
+// extractAnswerFromReasoning 从思考文本中尽量剥离出「给用户的正文」。
+// 识别常见分隔：</think>、</thinking>、以及中文「最终回答/结论」标题。
+func extractAnswerFromReasoning(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lowerMarkers := []string{
+		"</think>",
+		"</thinking>",
+		"</thought>",
+	}
+	lower := strings.ToLower(text)
+	for _, m := range lowerMarkers {
+		if idx := strings.Index(lower, m); idx >= 0 {
+			rest := strings.TrimSpace(text[idx+len(m):])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	for _, title := range []string{"\n最终回答", "\n## 最终回答", "\n### 最终回答", "\n结论", "\n## 结论", "\n### 结论"} {
+		if idx := strings.Index(text, title); idx >= 0 {
+			rest := strings.TrimSpace(text[idx:])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return text
 }
 
 func safeSend(ch chan *schema.Message, msg *schema.Message) {

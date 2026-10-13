@@ -101,11 +101,13 @@ const filteredConfigs = computed(() => {
     // 平台 label 形如 "DeepSeek (https://api.deepseek.com)"，匹配整串以支持中文别名（如"智谱AI"、"火山引擎"）
     const platformOpt = aiPlatformOptions.find(opt => opt.value === c.baseUrl)
     const platformLabel = platformOpt ? platformOpt.label.toLowerCase() : ''
+    const customHint = isPresetPlatform(c.baseUrl) ? '' : '自定义 openai 兼容'
     return name.includes(keyword)
       || modelName.includes(keyword)
       || baseUrl.includes(keyword)
       || platformName.includes(keyword)
       || platformLabel.includes(keyword)
+      || customHint.includes(keyword)
   })
 })
 
@@ -118,7 +120,10 @@ const tableData = computed(() => {
   }))
 })
 
-// 平台选项
+// 自定义 OpenAI 兼容协议：下拉哨兵值，真实地址写在 baseUrl
+const CUSTOM_OPENAI_VALUE = '__custom_openai__'
+
+// 平台选项（末尾「自定义」走 OpenAI 兼容协议，可填任意网关地址）
 const aiPlatformOptions = [
   {label: 'DeepSeek (https://api.deepseek.com)', value: 'https://api.deepseek.com'},
   {label: '硅基流动 (https://api.siliconflow.cn/v1)', value: 'https://api.siliconflow.cn/v1'},
@@ -144,7 +149,24 @@ const aiPlatformOptions = [
   {label: 'Azure OpenAI (https://YOUR_RESOURCE.openai.azure.com)', value: 'https://YOUR_RESOURCE.openai.azure.com'},
   {label: 'OpenRouter (https://openrouter.ai/api/v1)', value: 'https://openrouter.ai/api/v1'},
   {label: 'Ollama (http://localhost:11434/v1)', value: 'http://localhost:11434/v1'},
+  {label: '自定义 OpenAI 兼容协议', value: CUSTOM_OPENAI_VALUE},
 ]
+
+/** 下拉当前选中的平台（预设 URL 或自定义哨兵） */
+const platformSelect = ref('')
+
+function isPresetPlatform(baseUrl) {
+  if (!baseUrl || baseUrl === CUSTOM_OPENAI_VALUE) return false
+  return aiPlatformOptions.some(opt => opt.value === baseUrl)
+}
+
+function resolvePlatformSelect(baseUrl) {
+  if (!baseUrl) return ''
+  if (isPresetPlatform(baseUrl)) return baseUrl
+  return CUSTOM_OPENAI_VALUE
+}
+
+const isCustomPlatform = computed(() => platformSelect.value === CUSTOM_OPENAI_VALUE)
 
 function getPlatformName(baseUrl) {
   if (!baseUrl) return ''
@@ -153,7 +175,36 @@ function getPlatformName(baseUrl) {
     const idx = platform.label.indexOf(' (')
     return idx > 0 ? platform.label.substring(0, idx) : platform.label
   }
-  return ''
+  // 自定义地址：用主机名展示，便于列表区分
+  try {
+    const host = new URL(baseUrl).hostname
+    return host ? `自定义·${host}` : '自定义 OpenAI 兼容'
+  } catch {
+    return '自定义 OpenAI 兼容'
+  }
+}
+
+function onPlatformSelectChange(val) {
+  platformSelect.value = val || ''
+  if (!editingConfig.value) return
+  if (val === CUSTOM_OPENAI_VALUE) {
+    // 切到自定义：若当前仍是预设地址，清空以便填写自有网关
+    if (isPresetPlatform(editingConfig.value.baseUrl)) {
+      editingConfig.value.baseUrl = ''
+    }
+    onBaseUrlChange(editingConfig.value, editingConfig.value.baseUrl)
+    return
+  }
+  if (val) {
+    editingConfig.value.baseUrl = val
+    onBaseUrlChange(editingConfig.value, val)
+  }
+}
+
+function onCustomBaseUrlChange(val) {
+  if (!editingConfig.value) return
+  editingConfig.value.baseUrl = (val || '').trim()
+  onBaseUrlChange(editingConfig.value, editingConfig.value.baseUrl)
 }
 
 function onBaseUrlChange(aiConfig, newBaseUrl) {
@@ -259,6 +310,7 @@ function openAddDrawer() {
     supportVision: false,
     extraHeaders: "",
   })
+  platformSelect.value = resolvePlatformSelect(editingConfig.value.baseUrl)
   syncHeaderPairsFromConfig()
   drawerVisible.value = true
 }
@@ -274,6 +326,7 @@ function openCopyDrawer(row) {
   delete copy._modelOptions
   delete copy._loadingModels
   editingConfig.value = copy
+  platformSelect.value = resolvePlatformSelect(copy.baseUrl)
   syncHeaderPairsFromConfig()
   drawerVisible.value = true
 }
@@ -284,6 +337,7 @@ function openEditDrawer(row) {
   drawerMode.value = 'edit'
   // 深拷贝避免直接修改原对象
   editingConfig.value = JSON.parse(JSON.stringify(row))
+  platformSelect.value = resolvePlatformSelect(editingConfig.value.baseUrl)
   syncHeaderPairsFromConfig()
   drawerVisible.value = true
 }
@@ -291,6 +345,17 @@ function openEditDrawer(row) {
 // 保存抽屉中的配置（写入列表，不立即调后端）
 function applyDrawerConfig() {
   const c = editingConfig.value
+  if (platformSelect.value === CUSTOM_OPENAI_VALUE) {
+    c.baseUrl = (c.baseUrl || '').trim()
+    if (!c.baseUrl || c.baseUrl === CUSTOM_OPENAI_VALUE) {
+      message.warning('请填写自定义 OpenAI 兼容接口地址（例如 https://your-gateway/v1）')
+      return
+    }
+    if (!/^https?:\/\//i.test(c.baseUrl)) {
+      message.warning('自定义接口地址需以 http:// 或 https:// 开头')
+      return
+    }
+  }
   if (!c.name || !c.baseUrl || !c.apiKey || !c.modelName) {
     message.warning('名称/接口地址/apiKey/模型名称未填写完整')
     return
@@ -506,16 +571,29 @@ onMounted(() => {
           <n-form-item label="配置名称" required>
             <n-input v-model:value="editingConfig.name" placeholder="配置名称" clearable/>
           </n-form-item>
-          <n-form-item label="接口地址" required>
+          <n-form-item label="供应商" required>
             <n-select
-              v-model:value="editingConfig.baseUrl"
+              :value="platformSelect"
               :options="aiPlatformOptions"
               filterable
-              tag
               clearable
-              placeholder="选择或输入AI接口地址"
-              @update:value="(val) => onBaseUrlChange(editingConfig, val)"
+              placeholder="选择供应商，或选「自定义 OpenAI 兼容协议」"
+              @update:value="onPlatformSelectChange"
             />
+          </n-form-item>
+          <n-form-item v-if="isCustomPlatform" label="接口地址" required>
+            <n-input
+              :value="editingConfig.baseUrl"
+              clearable
+              placeholder="https://your-gateway.com/v1 （OpenAI 兼容，通常含 /v1）"
+              @update:value="onCustomBaseUrlChange"
+            />
+            <template #feedback>
+              兼容 OpenAI 协议的自建/第三方网关（OneAPI、NewAPI、LocalAI、vLLM、LiteLLM 等），对话走 /v1/chat/completions。
+            </template>
+          </n-form-item>
+          <n-form-item v-else label="接口地址" required>
+            <n-input :value="editingConfig.baseUrl" disabled placeholder="由所选供应商自动填充"/>
           </n-form-item>
           <n-form-item label="令牌(apiKey)" required>
             <n-input type="password" v-model:value="editingConfig.apiKey" placeholder="apiKey"

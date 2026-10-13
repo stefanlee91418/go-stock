@@ -245,6 +245,8 @@ func createReactAgent(ctx context.Context, chatModel model.ToolCallingChatModel,
 			}
 			logger.SugaredLogger.Infof("StreamToolCallChecker: total=%d content=%d reasoning=%d tool_calls=%d has_tool_call=%v finish_reason=%s",
 				totalChunks, contentChunks, reasoningChunks, toolCallChunks, hasToolCall, lastFinishReason)
+			logger.ModelInfof("StreamToolCallChecker: total=%d content=%d reasoning=%d tool_calls=%d has_tool_call=%v finish_reason=%s",
+				totalChunks, contentChunks, reasoningChunks, toolCallChunks, hasToolCall, lastFinishReason)
 			return hasToolCall, nil
 		},
 	})

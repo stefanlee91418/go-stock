@@ -200,6 +200,8 @@ async function fetchCurrentUser() {
 async function checkVipAndPromptLogin() {
   try {
     const vipInfo = await GetEffectiveSponsorVip()
+    // 开放访问模式不再强制弹登录；有赞助码且有效时才做引导提示
+    if (vipInfo?.openAccess) return
     if (vipInfo && vipInfo.vipLevel > 0 && vipInfo.active) {
       vipRequireLogin.value = true
       loginModal.show = true
@@ -454,7 +456,7 @@ async function handleCopyContent(content) {
 async function addPromptToTemplate(prompt) {
   if (prompt.needVip) {
     const vipInfo = await GetEffectiveSponsorVip()
-    if (!vipInfo || vipInfo.vipLevel <= 0 || !vipInfo.active) {
+    if (!(vipInfo?.openAccess || (vipInfo?.active && Number(vipInfo?.vipLevel) > 0))) {
       message.warning('该提示词为VIP专属，请先开通VIP')
       return
     }

@@ -38,6 +38,7 @@ import (
 	"github.com/duke-git/lancet/v2/mathutil"
 	"github.com/duke-git/lancet/v2/slice"
 	"github.com/duke-git/lancet/v2/strutil"
+	"github.com/go-resty/resty/v2"
 	"github.com/robfig/cron/v3"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -112,13 +113,14 @@ func (a *App) GetSponsorInfo() map[string]any {
 func (a *App) GetEffectiveSponsorVip() map[string]any {
 	status := data.EffectiveSponsorVipStatus()
 	return map[string]any{
-		"vipLevel":  status.Level,
-		"active":    status.Active,
-		"reason":    status.Reason,
-		"user":      status.User,
-		"startTime": status.StartTime,
-		"endTime":   status.EndTime,
-		"authTime":  status.AuthTime,
+		"vipLevel":   status.Level,
+		"active":     status.Active,
+		"reason":     status.Reason,
+		"user":       status.User,
+		"startTime":  status.StartTime,
+		"endTime":    status.EndTime,
+		"authTime":   status.AuthTime,
+		"openAccess": !data.VipGateEnabled,
 	}
 }
 
@@ -184,31 +186,40 @@ func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]
 		return result
 	}
 	url := strings.TrimRight(apiBase, "/") + path
-	req := data.SharedHTTPClient.R().SetHeader("Content-Type", "application/json")
-	if token != "" {
-		req = req.SetHeader("Authorization", "Bearer "+token)
-	}
-	if len(query) > 0 {
-		params := make(map[string]string, len(query))
-		for k, v := range query {
-			if v == nil {
-				continue
-			}
-			s := fmt.Sprintf("%v", v)
-			if s == "" {
-				continue
-			}
-			params[k] = s
+
+	buildReq := func(client *resty.Client) *resty.Request {
+		req := client.R().SetHeader("Content-Type", "application/json")
+		if token != "" {
+			req = req.SetHeader("Authorization", "Bearer "+token)
 		}
-		if len(params) > 0 {
-			req = req.SetQueryParams(params)
+		if len(query) > 0 {
+			params := make(map[string]string, len(query))
+			for k, v := range query {
+				if v == nil {
+					continue
+				}
+				s := fmt.Sprintf("%v", v)
+				if s == "" {
+					continue
+				}
+				params[k] = s
+			}
+			if len(params) > 0 {
+				req = req.SetQueryParams(params)
+			}
 		}
-	}
-	if body != "" {
-		req = req.SetBody(body)
+		if body != "" {
+			req = req.SetBody(body)
+		}
+		return req
 	}
 
-	resp, err := req.Execute(strings.ToUpper(method), url)
+	resp, err := buildReq(data.SharedHTTPClient).Execute(strings.ToUpper(method), url)
+	// 飞连 / 企业 HTTPS 解密代理常导致 x509 unknown authority：广场 API 回退一次跳过校验
+	if err != nil && data.IsTLSUnknownAuthority(err) {
+		logger.SugaredLogger.Warnf("PromptPlazaRequest TLS verify failed, retry with InsecureSkipVerify: %v", err)
+		resp, err = buildReq(data.CreateHTTPClientInsecureTLS(60 * time.Second)).Execute(strings.ToUpper(method), url)
+	}
 	if err != nil {
 		result["message"] = err.Error()
 		return result
@@ -320,9 +331,12 @@ func (a *App) CheckUpdate(flag int) {
 	}
 
 	// 定制版本：不检查新版本、不启用自动更新（启动检查/定时检查/手动检查均在此拦截），
-	// 仅保留赞助码解密与 VIP 等级判定（VIP2 及以上仍同步资讯）
+	// 开放访问模式下直接同步资讯；否则按赞助 VIP 判定。
 	if CustomBuild {
-		if _, vipLevel, ok := a.isVip(sponsorCode, "", &models.GitHubReleaseVersion{}); ok {
+		if !data.VipGateEnabled {
+			a.VipLevel = 2
+			go a.syncNews()
+		} else if _, vipLevel, ok := a.isVip(sponsorCode, "", &models.GitHubReleaseVersion{}); ok {
 			level, _ := convertor.ToInt(vipLevel)
 			a.VipLevel = level
 			if level >= 2 {
@@ -398,7 +412,10 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	}
 
-	if _, vipLevel, ok := a.isVip(sponsorCode, "", releaseVersion); ok {
+	if !data.VipGateEnabled {
+		a.VipLevel = 2
+		go a.syncNews()
+	} else if _, vipLevel, ok := a.isVip(sponsorCode, "", releaseVersion); ok {
 		level, _ := convertor.ToInt(vipLevel)
 		a.VipLevel = level
 		if level >= 2 {

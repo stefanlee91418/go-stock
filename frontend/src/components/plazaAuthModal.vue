@@ -18,7 +18,7 @@ const props = defineProps({
   show: {type: Boolean, default: false},
   tab: {type: String, default: 'login'},
   apiBase: {type: String, required: true},
-  // VIP 强制登录模式：弹窗不可关闭（沿用 promptPlaza 原有交互）
+  // VIP 欢迎引导：仅影响文案/横幅，弹窗始终可关闭（关闭后仍可浏览公开内容）
   vipRequireLogin: {type: Boolean, default: false}
 })
 
@@ -331,9 +331,9 @@ function goForgot() {
     preset="card"
     style="width: 400px"
     :title="vipRequireLogin ? '🎉 VIP专属福利' : '账号'"
-    :closable="!vipRequireLogin"
-    :maskClosable="!vipRequireLogin"
-    :closeOnEsc="!vipRequireLogin"
+    closable
+    :mask-closable="true"
+    :close-on-esc="true"
     @update:show="val => emit('update:show', val)"
   >
     <div v-if="vipRequireLogin" style="margin-bottom: 16px; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: #fff">

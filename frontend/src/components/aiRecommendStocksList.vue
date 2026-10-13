@@ -5,7 +5,7 @@ import {
   GetAiRecommendStocksList,
   GetAiRecommendStocksTodayStats,
   GetConfig,
-  GetSponsorInfo,
+  GetEffectiveSponsorVip,
   DeleteAiRecommendStocks,
   UpdateAiRecommendStocksAlert,
   ShareAnalysis,
@@ -17,7 +17,6 @@ import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from "./kline/useKlineModalFit";
 import sparkLine from "./stockSparkLine.vue"
 import {MdPreview} from "md-editor-v3";
-import {format} from "date-fns";
 
 const notify = useNotification()
 const vipLevel=ref("");
@@ -33,21 +32,14 @@ onBeforeMount(()=> {
     }
   })
 
-  GetSponsorInfo().then((res) => {
-   // console.log(res)
-    vipLevel.value = res.vipLevel;
-    vipStartTime.value = res.vipStartTime;
-    vipEndTime.value = res.vipEndTime;
-    //判断时间是否到期
-    if (res.vipLevel) {
-      if (res.vipEndTime < format(new Date(), 'yyyy-MM-dd HH:mm:ss')) {
-        //notify.warning({content: 'VIP已到期'})
-        expired.value = true;
-      }
-    }else{
-      //notify.success({content: '未开通VIP'})
-    }
-    isValidVip.value = !(vipLevel.value === "" || Number(vipLevel.value) <= 0);
+  GetEffectiveSponsorVip().then((res) => {
+    const active = !!res?.active
+    const lvl = Number(res?.vipLevel ?? 0)
+    vipLevel.value = active && !Number.isNaN(lvl) ? String(lvl) : "0"
+    vipStartTime.value = res?.startTime ?? ""
+    vipEndTime.value = res?.endTime ?? ""
+    expired.value = !active
+    isValidVip.value = active && lvl > 0
   })
 })
 onMounted(() => {

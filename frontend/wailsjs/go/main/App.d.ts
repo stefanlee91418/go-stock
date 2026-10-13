@@ -501,8 +501,6 @@ export function GlobalStockIndexesReadable():Promise<string>;
 
 export function Greet(arg1:string):Promise<data.StockInfo>;
 
-export function HideToTray():Promise<void>;
-
 export function HotEvent(arg1:number):Promise<any>;
 
 export function HotStock(arg1:string):Promise<any>;
@@ -680,8 +678,6 @@ export function SetUserProfileEnabled(arg1:boolean):Promise<void>;
 export function ShareAnalysis(arg1:string,arg2:string):Promise<string>;
 
 export function ShareText(arg1:string,arg2:string):Promise<string>;
-
-export function ShowFromTray():Promise<void>;
 
 export function StartFeishuBot():Promise<string>;
 

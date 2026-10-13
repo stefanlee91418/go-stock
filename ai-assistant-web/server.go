@@ -94,6 +94,12 @@ func (a *app) vipStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if !data.VipGateEnabled {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "vipLevel": 2, "active": true, "openAccess": true,
+		})
+		return
+	}
 	level, active := data.EffectiveSponsorVipLevel()
 	ok := active && level >= 2
 	payload := map[string]any{
@@ -115,6 +121,9 @@ func vipDeniedMessage(level int, active bool) string {
 }
 
 func requireVip2(w http.ResponseWriter) bool {
+	if !data.VipGateEnabled {
+		return true
+	}
 	level, active := data.EffectiveSponsorVipLevel()
 	if active && level >= 2 {
 		return true

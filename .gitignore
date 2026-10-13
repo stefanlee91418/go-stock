@@ -121,3 +121,4 @@ frontend/package.json.md5
 
 
 */__pycache__/*
+.tools

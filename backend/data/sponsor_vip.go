@@ -20,6 +20,10 @@ import (
 // 未注入时赞助码解密必然失败，因此启动日志会给出明确告警（见 main.checkDir）。
 const DefaultSponsorAESKeyHex = "cc1e0d684e32f176c56ff1fcf384dcd9"
 
+// VipGateEnabled 为 false 时关闭赞助 VIP 门控：全部功能对所有用户开放（后续以广告等方式变现）。
+// 设为 true 可恢复赞助码解密与等级/有效期校验。
+const VipGateEnabled = false
+
 // SponsorDecryptKeyHex 由主程序在启动时同步为 ldflags 注入的 BuildKey；为空则使用 DefaultSponsorAESKeyHex。
 var SponsorDecryptKeyHex string
 
@@ -177,7 +181,11 @@ func evaluateSponsorVip(info map[string]any, now time.Time) SponsorVipStatus {
 }
 
 // EffectiveSponsorVipStatus 解密本地配置中的赞助码并返回完整判定结果（含未生效原因）。
+// VipGateEnabled=false 时直接放行（等价 VIP2 生效），不再读取赞助码。
 func EffectiveSponsorVipStatus() SponsorVipStatus {
+	if !VipGateEnabled {
+		return SponsorVipStatus{Level: 2, Active: true}
+	}
 	sponsorCode := strings.TrimSpace(GetSettingConfig().SponsorCode)
 	if sponsorCode == "" {
 		return SponsorVipStatus{Reason: "未配置赞助码"}
